@@ -1,0 +1,185 @@
+import numpy as np
+from scipy import stats
+import pandas as pd
+import seaborn as sns
+
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from pandas.plotting import lag_plot
+from statsmodels.graphics.api import qqplot
+#%matplotlib inline
+
+import pickle
+
+from sklearn.model_selection import train_test_split
+from statsmodels.tsa.stattools import adfuller
+import itertools
+from statsmodels.tsa.arima_model import ARIMA
+
+from sklearn.metrics import mean_squared_error,mean_squared_log_error
+from sklearn.metrics import r2_score
+
+from pathlib import Path
+
+from clearml import Dataset, Task, Model, OutputModel
+from sklearn.metrics import accuracy_score, recall_score
+from sklearn.model_selection import train_test_split
+import global_config
+
+import warnings
+warnings.filterwarnings("ignore")
+
+task = Task.init(
+    project_name=global_config.PROJECT_NAME,
+    task_name='Arima_model_training',
+    output_uri=True
+)
+
+# Set default docker
+#task.set_base_docker(docker_image="python:3.7")
+
+# Training args
+training_args = {
+    'p':1,
+    'd':1,
+    'q':1
+    
+}
+task.connect(training_args)
+
+# Load our Dataset
+dataset = Dataset.get(dataset_id='f80ac9a8e8114852ad1049dcfe42227c'
+    #dataset_name='preprocessed_sales_dataset',
+    #dataset_project=global_config.PROJECT_NAME
+)
+local_folder = dataset.get_local_copy()
+
+df= pd.read_csv(Path( local_folder)/ 'MISSING_VALUE_HANDLED.csv')
+
+df.info()
+
+df=df.sort_values(by='Date') 
+df
+
+df= df[df['Store'] == 2]
+df=df[["Date","Sales"]]
+df['Date']=pd.to_datetime(df['Date'])
+df.set_index('Date',inplace=True)
+df.head()
+
+df.tail()
+df.describe()
+df.plot()
+plt.title("sales for store")
+plt.show()
+
+
+decomposition = sm.tsa.seasonal_decompose(df,
+  
+                                        model='additive', period=5)
+decomp = decomposition.plot()
+decomp.suptitle('"A" Value Decomposition')
+plt.tight_layout()
+plt.show()
+
+
+
+df1=df.loc['2013-01-01':'2013-12-31']
+
+df1.plot(figsize=(20,8))
+plt.title("2013 sales")
+plt.show()
+
+df2=df.loc['2014-01-01':'2014-12-31']
+
+
+df2.plot(figsize=(20,8))
+plt.title("2014 sales")
+plt.show()
+
+df.shape
+
+df.hist()
+df.plot(kind='kde')
+plt.title("Distribution od sales plot")
+plt.show()
+
+lag_plot(df)
+plt.title("lag sales plot")
+plt.show()
+
+moving_average_df=df.rolling(window=20).mean()  
+moving_average_df
+
+moving_average_df.plot()
+plt.title("Moving Average Plot")
+plt.show()
+
+sm.stats.durbin_watson(df) # correlation
+
+# acf and pacf plots
+
+fig = sm.graphics.tsa.plot_acf(df.values.squeeze(), lags=40)#, ax=ax1)
+plt.show()
+#ax2 = fig.add_subplot(212)
+fig = sm.graphics.tsa.plot_pacf(df, lags=40)#, ax=ax2)
+plt.show()
+# Test for stationarity
+
+test_result=adfuller(df['Sales'])
+test_result
+
+#Ho: It is non stationary
+#H1: It is stationary
+
+def adfuller_test(sales):
+    result=adfuller(sales)
+    labels = ['ADF Test Statistic','p-value','#Lags Used','Number of Observations Used']
+    for value,label in zip(result,labels):
+        print(label+' : '+str(value) )
+    print('Critical Values:')
+    for key, value in result[4].items():
+        print(key, value)
+    
+    if result[1] <= 0.05:
+        print("strong evidence against the null hypothesis(Ho), reject the null hypothesis. Data has no unit root and is stationary")
+    else:
+        print("weak evidence against null hypothesis, time series has a unit root, indicating it is non-stationary ")
+    
+adfuller_test(df['Sales'])
+
+#test data 2015-07-01 to 2015-07-31
+training_data,test_data=df[df.index<'2015-07-01'],df[df.index>='2015-07-01']
+
+print(df.shape)
+print(training_data.shape)
+print(test_data.shape)
+
+# ARIMA
+arima= sm.tsa.arima.ARIMA(training_data,order=(training_args['p'],training_args['d'],training_args['q']))
+model=arima.fit()
+model.summary()
+model.aic
+
+pred= model.forecast(steps=31)[0]
+test_data['predict']=pred
+test_data[['Sales','predict']].plot(figsize=(20,8))
+plt.plot(test_data['Sales'].values.tolist(),color='green')
+plt.plot(test_data['predict'].values.tolist())
+plt.title('Forecast')
+plt.show() 
+
+
+print("RMSE =",np.sqrt(mean_squared_error(test_data['Sales'], test_data['predict'])))
+
+rmspe = np.sqrt(mean_squared_error(test_data['Sales'], test_data['predict']) / np.mean(test_data['Sales']))
+
+
+print(rmspe)
+
+task.get_logger().report_scalar(
+    title='Performance',
+    series='RMSPE',
+    value=rmspe,
+    iteration=0
+)
